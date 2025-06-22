@@ -1,4 +1,4 @@
-name: Kernel Build
+name: Kernel Build - Pixel 4 (Floral)
 
 on:
   workflow_dispatch:
@@ -7,29 +7,59 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-    - name: Checkout kernel source
-      uses: actions/checkout@v4
+      - name: Checkout kernel source
+        uses: actions/checkout@v4
 
-    - name: Set up MemKernel as a module (M-OUT) with specified name
-      run: |
-        # curl -Ls "https://raw.githubusercontent.com/aishchi/MemKernel/main/kernel/setup.sh" | bash -s M dogi
+      - name: Install dependencies
+        run: |
+          sudo apt update && sudo apt install -y git build-essential libssl-dev flex bison libelf-dev dwarves
 
+      - name: Set up MemKernel as a module (M-OUT)
+        run: |
+          mkdir -p out/
+          curl -LSs "https://raw.githubusercontent.com/aiichi/MemKernel/main/kernel/setup.sh"  | bash -s M memkernel
 
-    - name: Android kernel build
-      uses: lemniskett/android-kernel-actions@master
-      id: build
-      env:
-        NAME: Loganysl
-      with:
-        arch: arm64
-        compiler: google_clang
-        defconfig: floral_defconfig
-        image: Image.gz-dtb
+      - name: Clone Pixel 4 (Floral) Kernel Source if not present
+        run: |
+          if [ ! -d "kernel/google/floral" ]; then
+            git clone https://android.googlesource.com/kernel/msm  --depth=1 -b android-msm-sdla-mainline-qpr3-android13.0_r2 kernel/google/floral
+          fi
 
-    - name: Upload Kernel and Module
-      uses: actions/upload-artifact@v4
-      with:
-        name: module
-        path: |
-          ${{ steps.build.outputs.outfile }}
-          ./out/drivers/memkernel/memkernel.ko
+      - name: Prepare build directory
+        run: |
+          cd kernel/google/floral
+          make mrproper
+          make floral_defconfig O=../../out/
+
+      - name: Merge MemKernel module into drivers folder
+        run: |
+          cp -R ./out/memkernel ./kernel/google/floral/drivers/memkernel
+          echo 'obj-$(CONFIG_MEMKERNEL) += memkernel/' >> ./kernel/google/floral/drivers/Makefile
+          echo 'CONFIG_MEMKERNEL=m' >> ./out/.config
+
+      - name: Generate .config with defconfig + modules
+        run: |
+          cd kernel/google/floral
+          make O=../../out/ olddefconfig
+
+      - name: Build Kernel Image & Modules
+        run: |
+          cd kernel/google/floral
+          make -j$(nproc) O=../../out/ Image.gz-dtb modules dtbs
+
+      - name: Build MemKernel Module Separately (if needed)
+        run: |
+          cd out/memkernel
+          make -C ../../kernel/google/floral M=$(pwd)
+
+      - name: Copy final kernel image
+        run: |
+          cp ./out/arch/arm64/boot/Image.gz-dtb ./out/Image.gz-dtb
+
+      - name: Upload Kernel Image and Module
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-and-module
+          path: |
+            ./out/Image.gz-dtb
+            ./out/memkernel/memkernel.ko
