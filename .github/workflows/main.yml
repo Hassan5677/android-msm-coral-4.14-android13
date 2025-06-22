@@ -10,13 +10,28 @@ jobs:
       - name: Checkout kernel source
         uses: actions/checkout@v4
 
+      - name: Debug Environment
+        run: |
+          # Print shell type
+          echo "Current shell: $(basename $SHELL)"
+          
+          # Print PATH
+          echo "PATH: $PATH"
+          
+          # Verify mkdir exists
+          which mkdir
+          mkdir --version
+
       - name: Install dependencies
         run: |
           sudo apt update && sudo apt install -y git build-essential libssl-dev flex bison libelf-dev dwarves
 
       - name: Set up MemKernel as a module (M-OUT)
         run: |
-          /bin/bash -c "mkdir -p out/"
+          # Use absolute path to bash and mkdir
+          /bin/bash -c "/bin/mkdir -p out/"
+          
+          # Download and run MemKernel setup
           curl -LSs "https://raw.githubusercontent.com/aiichi/MemKernel/main/kernel/setup.sh"  | /bin/bash -s M memkernel
 
       - name: Clone Pixel 4 (Floral) Kernel Source if not present
