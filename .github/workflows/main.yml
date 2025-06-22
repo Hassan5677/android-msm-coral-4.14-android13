@@ -16,8 +16,8 @@ jobs:
 
       - name: Set up MemKernel as a module (M-OUT)
         run: |
-          mkdir -p out/
-          curl -LSs "https://raw.githubusercontent.com/aiichi/MemKernel/main/kernel/setup.sh"  | bash -s M memkernel
+          /bin/bash -c "mkdir -p out/"
+          curl -LSs "https://raw.githubusercontent.com/aiichi/MemKernel/main/kernel/setup.sh"  | /bin/bash -s M memkernel
 
       - name: Clone Pixel 4 (Floral) Kernel Source if not present
         run: |
