@@ -1,80 +1,75 @@
-name: Kernel Build - Pixel 4 (Floral)
-
+name: Build Kernel 4.14
 on:
   workflow_dispatch:
+  schedule:
+    # Setiap Sabtu pukul 00:00 UTC
+    - cron: "0 0 * * 6"
+  push:
+    branches:
+      - HEAD
+  pull_request:
+    branches:
+      - HEAD
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
+      CCACHE_NOHASHDIR: "true"
+      CCACHE_MAXSIZE: "2G"
+      CCACHE_HARDLINK: "true"
+      KERNEL_DEFCONFIG: "floral_defconfig"
+      KERNEL_CMDLINE: "ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
+    
     steps:
-      - name: Checkout kernel source
+      - name: Checkout
         uses: actions/checkout@v4
+        with:
+          submodules: "true"
+          fetch-depth: 100
 
-      - name: Debug Environment
-        run: |
-          # Print shell type
-          echo "Current shell: $(basename $SHELL)"
-          
-          # Print PATH
-          echo "PATH: $PATH"
-          
-          # Verify mkdir exists
-          which mkdir
-          mkdir --version
+      - name: Set up ccache
+        uses: hendrikmuhs/ccache-action@v1.2
 
       - name: Install dependencies
         run: |
-          sudo apt update && sudo apt install -y git build-essential libssl-dev flex bison libelf-dev dwarves
+          sudo apt-get update -y 
+          sudo apt install gcc-aarch64-linux-gnu -y
+          sudo apt install gcc-arm-linux-gnueabi -y
+          sudo apt install aria2 binutils make python3 libssl-dev build-essential bc bison flex unzip libssl-dev ca-certificates xz-utils mkbootimg cpio device-tree-compiler git git-lfs -y
+          curl -LSs "https://raw.githubusercontent.com/Poko-Apps/MemKernel/main/kernel/setup.sh" | bash -s Y
+          aria2c -j$(nproc --all) $(curl -fsSL https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r536225.tar.gz)
+          mkdir zyc-clang
+          tar -xzvf Clang-*.tar.gz -C zyc-clang >> /dev/null
+          git clone https://github.com/osm0sis/AnyKernel3
+          sed -i 's/do.devicecheck=1/do.devicecheck=0/g' AnyKernel3/anykernel.sh
+          sed -i 's!BLOCK=/dev/block/platform/omap/omap_hsmmc.0/by-name/boot;!BLOCK=auto;!g' AnyKernel3/anykernel.sh
+          sed -i 's/IS_SLOT_DEVICE=0;/is_slot_device=auto;/g' AnyKernel3/anykernel.sh
+          rm -rf AnyKernel3/.git* AnyKernel3/README.md
+          # mem module
+          curl -LSs "https://raw.githubusercontent.com/Poko-Apps/MemKernel/main/kernel/setup.sh" | bash -s M
 
-      - name: Set up MemKernel as a module (M-OUT)
+      - name: GetTime
+        id: get_time
         run: |
-          # Use absolute path to bash and mkdir
-          /bin/bash -c "/bin/mkdir -p out/"
-          
-          # Download and run MemKernel setup
-          curl -LSs "https://raw.githubusercontent.com/aiichi/MemKernel/main/kernel/setup.sh"  | /bin/bash -s M memkernel
+          echo "TIME=$(TZ=UTC+3 date +%s )" >> $GITHUB_OUTPUT
 
-      - name: Clone Pixel 4 (Floral) Kernel Source if not present
+      - name: Build Kernel-With-KernelSU
         run: |
-          if [ ! -d "kernel/google/floral" ]; then
-            git clone https://android.googlesource.com/kernel/msm  --depth=1 -b android-msm-sdla-mainline-qpr3-android13.0_r2 kernel/google/floral
-          fi
+          export PATH=$(pwd)/zyc-clang/bin/:$PATH
+          make $KERNEL_CMDLINE $KERNEL_DEFCONFIG CC="ccache clang"
+          make $KERNEL_CMDLINE CC="ccache clang" -j$(nproc --all)
+          cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3
 
-      - name: Prepare build directory
-        run: |
-          cd kernel/google/floral
-          make mrproper
-          make floral_defconfig O=../../out/
-
-      - name: Merge MemKernel module into drivers folder
-        run: |
-          cp -R ./out/memkernel ./kernel/google/floral/drivers/memkernel
-          echo 'obj-$(CONFIG_MEMKERNEL) += memkernel/' >> ./kernel/google/floral/drivers/Makefile
-          echo 'CONFIG_MEMKERNEL=m' >> ./out/.config
-
-      - name: Generate .config with defconfig + modules
-        run: |
-          cd kernel/google/floral
-          make O=../../out/ olddefconfig
-
-      - name: Build Kernel Image & Modules
-        run: |
-          cd kernel/google/floral
-          make -j$(nproc) O=../../out/ Image.gz-dtb modules dtbs
-
-      - name: Build MemKernel Module Separately (if needed)
-        run: |
-          cd out/memkernel
-          make -C ../../kernel/google/floral M=$(pwd)
-
-      - name: Copy final kernel image
-        run: |
-          cp ./out/arch/arm64/boot/Image.gz-dtb ./out/Image.gz-dtb
-
-      - name: Upload Kernel Image and Module
+      - name: Upload Kernel-SU
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-and-module
-          path: |
-            ./out/Image.gz-dtb
-            ./out/memkernel/memkernel.ko
+          name: Nyan_kernel-KSU-${{ steps.get_time.outputs.TIME }}
+          path: "AnyKernel3/*"
+    
+      - name: Upload mem module
+        uses: actions/upload-artifact@v4
+        with:
+          name: memodule
+          path: "./out/drivers/memkernel/vinn_memk.ko"
