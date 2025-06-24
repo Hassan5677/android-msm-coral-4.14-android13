@@ -1,75 +1,153 @@
 name: Build Kernel 4.14
+
 on:
-  workflow_dispatch:
+  workflow_dispatch: # Allows manual triggering from the GitHub UI
   schedule:
-    # Setiap Sabtu pukul 00:00 UTC
-    - cron: "0 0 * * 6"
+    - cron: "0 0 * * 6" # Every Saturday at 00:00 UTC
   push:
     branches:
-      - HEAD
+      - HEAD # Runs on push to the default branch (e.g., main, master)
   pull_request:
     branches:
-      - HEAD
+      - HEAD # Runs on pull requests targeting the default branch
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest # Use the latest Ubuntu runner
     env:
+      # ccache environment variables
       CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
       CCACHE_NOHASHDIR: "true"
       CCACHE_MAXSIZE: "2G"
       CCACHE_HARDLINK: "true"
-      KERNEL_DEFCONFIG: "floral_defconfig"
-      KERNEL_CMDLINE: "ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
-    
+      
+      # Kernel configuration variables
+      KERNEL_DEFCONFIG: "floral_defconfig" # Your device's defconfig
+      # Common kernel build command line arguments
+      # Note: CC is passed directly in the make commands below to use ccache clang
+      KERNEL_CMDLINE: "ARCH=arm64 CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- O=out"
+
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          submodules: "true"
-          fetch-depth: 100
+          submodules: "true" # Checkout submodules if your kernel source uses them
+          fetch-depth: 100 # Fetch more history for tools that might need it (e.g., git describe)
+
+      - name: Mark workspace as safe directory
+        run: git config --global --add safe.directory /github/workspace
 
       - name: Set up ccache
         uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ${{ runner.os }}-kernel-${{ env.KERNEL_DEFCONFIG }}
 
-      - name: Install dependencies
+      - name: Install dependencies and Toolchain
         run: |
-          sudo apt-get update -y 
-          sudo apt install gcc-aarch64-linux-gnu -y
-          sudo apt install gcc-arm-linux-gnueabi -y
-          sudo apt install aria2 binutils make python3 libssl-dev build-essential bc bison flex unzip libssl-dev ca-certificates xz-utils mkbootimg cpio device-tree-compiler git git-lfs -y
-          curl -LSs "https://raw.githubusercontent.com/Poko-Apps/MemKernel/main/kernel/setup.sh" | bash -s Y
-          aria2c -j$(nproc --all) $(curl -fsSL https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r536225.tar.gz)
-          mkdir zyc-clang
-          tar -xzvf Clang-*.tar.gz -C zyc-clang >> /dev/null
+          echo "Updating apt packages and installing build dependencies..."
+          sudo apt-get update -y
+          sudo apt install -y --no-install-recommends \
+            gcc-aarch64-linux-gnu \
+            gcc-arm-linux-gnueabi \
+            aria2 \
+            binutils \
+            make \
+            python3 \
+            libssl-dev \
+            build-essential \
+            bc \
+            bison \
+            flex \
+            unzip \
+            libssl-dev \
+            ca-certificates \
+            xz-utils \
+            mkbootimg \
+            cpio \
+            device-tree-compiler \
+            git \
+            git-lfs
+
+          echo "Downloading AOSP Clang toolchain..."
+          # Download a specific AOSP Clang release (clang-r536225)
+          CLANG_TAR_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r536225.tar.gz"
+          CLANG_TAR_FILE="clang-r536225.tar.gz" # Explicitly name the downloaded file
+          aria2c -j$(nproc --all) "$CLANG_TAR_URL" -o "$CLANG_TAR_FILE"
+
+          echo "Extracting Clang toolchain to zyc-clang directory..."
+          mkdir -p zyc-clang # Create the directory if it doesn't exist
+          # Extract the tarball. --strip-components=1 removes the top-level directory inside the tar.
+          # This ensures the contents (bin, lib, etc.) are directly in zyc-clang.
+          tar -xzvf "$CLANG_TAR_FILE" -C zyc-clang --strip-components=1 >> /dev/null
+
+          echo "Listing contents of zyc-clang to verify extraction:"
+          ls -F zyc-clang/bin/ || true # Show bin contents, '|| true' to prevent failure if empty
+
+          echo "Setting up AnyKernel3..."
           git clone https://github.com/osm0sis/AnyKernel3
+          # Modify AnyKernel3 script for broader device compatibility
           sed -i 's/do.devicecheck=1/do.devicecheck=0/g' AnyKernel3/anykernel.sh
           sed -i 's!BLOCK=/dev/block/platform/omap/omap_hsmmc.0/by-name/boot;!BLOCK=auto;!g' AnyKernel3/anykernel.sh
           sed -i 's/IS_SLOT_DEVICE=0;/is_slot_device=auto;/g' AnyKernel3/anykernel.sh
+          # Clean up AnyKernel3 unnecessary files
           rm -rf AnyKernel3/.git* AnyKernel3/README.md
-          # mem module
+
+          echo "Setting up MemKernel module..."
+          # This script sets up the MemKernel module.
+          # Ensure this script is compatible with your kernel source.
           curl -LSs "https://raw.githubusercontent.com/Poko-Apps/MemKernel/main/kernel/setup.sh" | bash -s M
 
-      - name: GetTime
-        id: get_time
+      - name: Get Build Time
+        id: get_time # ID for referencing this step's outputs
         run: |
-          echo "TIME=$(TZ=UTC+3 date +%s )" >> $GITHUB_OUTPUT
+          # Get current UTC+3 timestamp for artifact naming
+          echo "TIME=$(TZ=UTC+3 date +%s)" >> $GITHUB_OUTPUT
 
-      - name: Build Kernel-With-KernelSU
+      - name: Build Kernel
         run: |
+          echo "Exporting PATH for Clang toolchain..."
+          # Add the extracted Clang's bin directory to PATH for make to find clang
           export PATH=$(pwd)/zyc-clang/bin/:$PATH
-          make $KERNEL_CMDLINE $KERNEL_DEFCONFIG CC="ccache clang"
-          make $KERNEL_CMDLINE CC="ccache clang" -j$(nproc --all)
-          cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3
 
-      - name: Upload Kernel-SU
+          echo "Creating output directory..."
+          mkdir -p out
+
+          echo "Cleaning previous kernel build artifacts..."
+          # Clean previous builds in the output directory
+          make O=out clean mrproper || true
+
+          echo "Applying kernel defconfig: ${{ env.KERNEL_DEFCONFIG }}..."
+          # Apply the defconfig. CC="ccache clang" uses ccache with clang.
+          make ${{ env.KERNEL_CMDLINE }} ${{ env.KERNEL_DEFCONFIG }} CC="ccache clang"
+
+          echo "Building kernel image and modules..."
+          # Build the kernel image and modules, utilizing all available processor cores
+          make ${{ env.KERNEL_CMDLINE }} CC="ccache clang" -j$(nproc --all)
+
+          echo "Copying Image.gz-dtb to AnyKernel3 directory..."
+          # Copy the compiled kernel image into the AnyKernel3 directory for packaging
+          cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
+
+          # Note: If 'vinn_memk.ko' is not found, you may need an explicit 'make modules'
+          # command here if MemKernel is not built by the main kernel target.
+          # Example: make ${{ env.KERNEL_CMDLINE }} CC="ccache clang" -j$(nproc --all) modules
+
+      - name: Verify Build Artifacts
+        run: |
+          echo "Verifying Image.gz-dtb in AnyKernel3:"
+          ls -lh AnyKernel3/Image.gz-dtb || echo "Image.gz-dtb not found in AnyKernel3!"
+
+          echo "Verifying MemKernel module (vinn_memk.ko):"
+          ls -lh out/drivers/memkernel/vinn_memk.ko || echo "vinn_memk.ko not found! Check MemKernel setup and kernel config."
+
+      - name: Upload Flashable Kernel Zip
         uses: actions/upload-artifact@v4
         with:
-          name: Nyan_kernel-KSU-${{ steps.get_time.outputs.TIME }}
-          path: "AnyKernel3/*"
-    
-      - name: Upload mem module
+          name: Nyan_kernel-Flashable-${{ steps.get_time.outputs.TIME }} # Unique name with timestamp
+          path: "AnyKernel3/*" # Upload the entire AnyKernel3 contents as a flashable zip
+
+      - name: Upload MemKernel Module
         uses: actions/upload-artifact@v4
         with:
           name: memodule
-          path: "./out/drivers/memkernel/vinn_memk.ko"
+          path: "./out/drivers/memkernel/vinn_memk.ko" # Path to the compiled MemKernel module
