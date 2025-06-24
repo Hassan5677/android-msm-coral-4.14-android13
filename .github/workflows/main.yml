@@ -35,7 +35,8 @@ jobs:
           fetch-depth: 100 # Fetch more history for tools that might need it (e.g., git describe)
 
       - name: Mark workspace as safe directory
-        run: git config --global --add safe.directory /github/workspace
+        run: |
+          git config --global --add safe.directory /github/workspace
 
       - name: Set up ccache
         uses: hendrikmuhs/ccache-action@v1.2
